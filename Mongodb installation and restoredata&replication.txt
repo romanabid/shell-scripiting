@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+echo "enter the ip address"
+read IPADDRESS
+IP_ADDRESS=$IPADDRESS
+user=$(whoami)
+var=$(pwd)
+echo $var
+check_root() {
+    if [ $EUID != 0 ]; then
+        echo "You should have "'"root"'" access to execute the $0 file."
+        exit 1
+    fi
+}
+check_root
+
+echo "=================== UPDATING PACKAGES ==================="
+sudo apt-get update
+
+java_install() {
+echo "=================== INSTALLING JDK-11 ==================="
+java -version
+if [[  $? -eq 0 ]]; then 
+     echo "java is already installed"
+     
+else 
+        sudo apt-get update  
+        sudo apt-get install openjdk-11-jdk -y
+    if [[ ! $? -eq 0 ]]; then
+             echo "ERROR: java failed to install"
+         exit 1
+    else
+             echo "java is installed successfully"
+    fi
+
+ fi
+}
+
+install_mongodb() {
+echo "=================== INSTALLING MONGODB ======================"
+sudo apt-get install gnupg
+curl -fsSL https://pgp.mongodb.com/server-6.0.asc | \
+   sudo gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg \
+   --dearmor
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+sudo apt-get update
+sudo apt-get install -y mongodb-org
+sudo systemctl start mongod
+sudo systemctl daemon-reload
+sudo systemctl enable mongod
+
+echo "=================== MONGODB INSTALLATION SUCCESSFULL ======================"
+}
+mongodb() {
+echo "=================== CONFIGURING MONGODB ==================="
+
+
+
+
+cd $var/Mongodb && unzip optimize_auth.zip && mongorestore  --db optimize_auth optimize_auth
+
+if  [[ ! $? -eq 0 ]]; then
+          echo "Error: failed to restore mongodb database"
+            exit 1
+ else
+                echo "mongodb database imported"
+
+ fi
+sudo sed -i "s/localhost/$IP_ADDRESS/g"  $var/Mongodb/Mongodbuser.js
+cd $var/Mongodb && mongosh  < Mongodbuser.js
+if [[ ! $? -eq 0 ]]; then
+     echo "Error: Failed to create mongodb user ."
+     exit 1
+else
+        echo "mongodb user created"
+fi
+# Generating security key
+sudo openssl rand -base64 756 > $var/rsetkey
+if [ -f "$var/rsetkey" ]; then
+    sudo chmod 400 $var/rsetkey
+    sudo chown mongodb:mongodb $var/rsetkey
+    sudo cp $var/rsetkey /var/lib/mongodb
+    cd /var/lib/mongodb && sudo chmod 600 rsetkey
+else
+    echo "Error: Failed to generate MongoDB key file."
+    exit 1
+fi
+sudo sed -i "s/127.0.0.1/0.0.0.0/g" /etc/mongod.conf
+sudo rm -rf /etc/mongod.conf
+sudo cp $var/Mongodb/mongod.conf /etc/mongod.conf
+sudo systemctl restart mongod
+
+echo "=================== DATABASE RESTORE SUCCESSFULL================="
+}
+echo "=============================REPLICASET============================"
+replica(){
+    # Copying mongo.service file to mongo1.service
+    sudo cp /lib/systemd/system/mongod.service /lib/systemd/system/mongod1.service
+    # Changing mongo.conf to mongo2.cong inside mongo1.service file
+    sudo sed -i "s/mongod.conf/mongod2.conf/g" /lib/systemd/system/mongod1.service
+    # Crreating folders in lib&log path and giving read write and exectue permissions for those folders
+    sudo mkdir -p /var/lib/mongodb1
+    sudo mkdir -p /var/log/mongodb1
+    cd /var/log/mongodb1 && touch mongodb1.log
+    sudo chmod -R 777 /var/lib/mongodb1
+    sudo chmod -R 777 /var/log/mongodb1
+    sudo cp $var/Mongodb/mongod2.conf /etc/mongod2.conf
+    # Restarting the mongod1.service
+    sudo systemctl daemon-reload
+    sudo systemctl start mongod1.service
+echo"==============wait for 1 min mongod1.service will soon start ==================="    
+    sleep 60
+    mongosh localhost:27018 <<EOF
+use admin;
+db.createUser({ user: "fire",pwd: "fire123", roles: [ "root" ]})
+EOF
+    sudo sed -i "s/mongod2.conf/mongod1.conf/g" /lib/systemd/system/mongod1.service
+    # Coping the rsetkey to mongodb1 and Removing/replacing the mongod2.conf file to mongod1.conf file
+    sudo cp /var/lib/mongodb/rsetkey /var/lib/mongodb1/
+    sudo chown mongodb:mongodb /var/lib/mongodb1/rsetkey
+    cd /var/lib/mongodb1 && sudo chmod 600 rsetkey
+    sudo rm -rf /etc/mongod2.conf
+    sudo cp $var/Mongodb/mongod1.conf /etc/mongod1.conf
+    # Restarting the mongod1 service
+    sudo systemctl daemon-reload
+    sudo systemctl restart mongod1
+    # Replacing localhost to ip address inside replica.js file
+    sudo sed -i "s/localhost/$IP_ADDRESS/g"  $var/Mongodb/replica.js
+    cd $var/Mongodb && mongosh < replica.js
+    echo "===============resplication completed============================"
+
+}
+java_install
+install_mongodb
+mongodb
+replica
+
